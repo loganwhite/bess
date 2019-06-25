@@ -1,0 +1,5 @@
+phy_port = PMDPort(port_id=0,num_inc_q=1, num_out_q=1)
+
+output = QueueOut(port=phy_port, qid=0) #This module will write to myport on queue 
+
+Source() -> Measure() -> output

@@ -1,0 +1,19 @@
+
+
+phy_port1 = PMDPort(port_id=0,num_inc_q=1, num_out_q=1)
+phy_port2 = PMDPort(port_id=1,num_inc_q=1, num_out_q=1)
+
+# output1 = QueueOut(port=phy_port1, qid=0) #This module will write to myport on queue
+input1 = QueueInc(port=phy_port1, qid=0) 
+
+output2 = QueueOut(port=phy_port2, qid=0) #This module will write to myport on queue
+# input2 = QueueInc(port=phy_port2, qid=0) 
+
+
+#input1 -> Measure() -> output2
+#input1 -> Measure() -> output1
+
+input1 -> output2
+# input2 -> output2
+
+# output1.attach_task(wid=0)

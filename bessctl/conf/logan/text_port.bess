@@ -1,0 +1,5 @@
+myport::PMDPort(port_id=0, num_inc_q=1, num_out_q=1)
+
+nput::QueueInc(port=myport, qid=0) #This module will read from myport on queue 0
+output::QueueOut(port=myport, qid=0)
+nput->Measure()->Sink()
