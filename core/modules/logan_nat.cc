@@ -66,9 +66,8 @@ CommandResponse MyNAT::Init(const bess::pb::MyNATArg &arg) {
   // Check before committing any changes.
   state_size_ = (size_t)arg.state_size();
   fake_state_ = (uint8_t*)malloc(state_size_ * sizeof(uint8_t));
-
-  //init redis connection
-  InitRedisConnection();
+  // init shared memory
+  if (InitShm() < 0) return CommandFailure(EINVAL);
   for (const auto &address_range : arg.ext_addrs()) {
     for (const auto &range : address_range.port_ranges()) {
       if (range.begin() >= range.end() || range.begin() > UINT16_MAX ||
@@ -113,7 +112,7 @@ CommandResponse MyNAT::Init(const bess::pb::MyNATArg &arg) {
 
   // Sort so that GetInitialArg is predictable and consistent.
   std::sort(ext_addrs_.begin(), ext_addrs_.end());
-  SaveState<uint8_t>(&fake_state_, sizeof(uint8_t) * state_size_, "nat_state");
+
   return CommandSuccess();
 }
 
@@ -129,6 +128,7 @@ CommandResponse MyNAT::GetInitialArg(const bess::pb::EmptyArg &) {
       erange->set_suspended(irange.suspended);
     }
   }
+  SaveState<uint8_t>(&fake_state_, sizeof(uint8_t) * state_size_);
   return CommandSuccess(resp);
 }
 
@@ -236,7 +236,7 @@ MyNAT::HashTable::Entry *MyNAT::CreateNewEntry(const Endpoint &src_internal,
         free(fake_state_);
         fake_state_ = NULL;  // in case it becomes a wild pointer.
       }
-      FetchState<uint8_t>(&fake_state_, "nat_state");
+      FetchState<uint8_t>(&fake_state_);
       src_external.port = be16_t(port);
       auto *hash_reverse = map_.Find(src_external);
       if (hash_reverse == nullptr) {
@@ -277,7 +277,7 @@ MyNAT::HashTable::Entry *MyNAT::CreateNewEntry(const Endpoint &src_internal,
       // FIXME: Should not try for kMaxTrials.
     } while (port != start_port && trials < kMaxTrials);
   }
-  SaveState<uint8_t>(&fake_state_, sizeof(uint8_t)*state_size_, "nat_state");
+  SaveState<uint8_t>(&fake_state_, sizeof(uint8_t) * state_size_);
   return nullptr;
 }
 
@@ -359,7 +359,7 @@ inline void MyNAT::DoProcessBatch(Context *ctx, bess::PacketBatch *batch) {
       free(fake_state_);
       fake_state_ = NULL;
     }
-    FetchState<uint8_t>(&fake_state_, "nat_state");
+    FetchState<uint8_t>(&fake_state_);
     auto *hash_item = map_.Find(before);
 
     if (hash_item == nullptr) {
@@ -368,7 +368,7 @@ inline void MyNAT::DoProcessBatch(Context *ctx, bess::PacketBatch *batch) {
         continue;
       }
     }
-    SaveState<uint8_t>(&fake_state_, sizeof(uint8_t)*state_size_, "nat_state");
+    SaveState<uint8_t>(&fake_state_, sizeof(uint8_t) * state_size_);
     // only refresh for outbound packets, rfc4787 REQ-6
     if (dir == kForward) {
       hash_item->second.last_refresh = now;
@@ -396,62 +396,27 @@ std::string MyNAT::GetDesc() const {
 
 
 template<typename T>
-int MyNAT::FetchState(T** state, const char* state_name) {
-  redisReply* reply = NULL;
-  char str_redis_cmd[1024] = {0};
-
-  if (!is_connected_) return -1;
-  // printf("start executing the redis commands...\n");
-
-  // Generate redis command
-  sprintf(str_redis_cmd, "GET %s", state_name);
-  reply = (redisReply*)redisCommand(context, str_redis_cmd);
-  if (!reply || reply->type == REDIS_REPLY_ERROR /* || !strcmp("(null)", reply->str) */) {
-    fprintf(stderr, "Connot running redis commands or Redis server \
-    returns an error. Error message: %s\n", reply ? reply->str : context->errstr);
-    freeReplyObject(reply);
-    return -1;
-  }
-  // printf("Redis: %s\n", reply->str);
-  (*state) = (T*) malloc(sizeof(T) * state_size_);
-  memcpy((*state), reply->str, sizeof(T) * state_size_);
-
-  freeReplyObject(reply);
+int MyNAT::FetchState(T** state) {
+  (*state) = (T*)malloc(sizeof(T) * state_size_);
+  memcpy((*state), shm_, state_size_ * sizeof(T));
   return 0;
 }
 
 
 template<typename T>
-int MyNAT::SaveState(T** state, size_t size, const char* state_name) {
-  redisReply* reply = NULL;
-  char str_redis_cmd[1024] = {0};
-  if (!is_connected_) return -1;
-  printf("start executing the redis commands...\n");
-  sprintf(str_redis_cmd, "SET %s %%b", state_name);
-  reply = (redisReply*)redisCommand(context, str_redis_cmd, (*state), size);
-  if (!reply || reply->type == REDIS_REPLY_ERROR || !strcmp("(null)", reply->str)) {
-    fprintf(stderr, "Connot running redis commands or Redis \
-    server returns an error. Error message: %s\n", reply ? reply->str : context->errstr);
-    freeReplyObject(reply);
-    return -1;
-  }
-  printf("Redis: %s\n", reply->str);
-  freeReplyObject(reply);
+int MyNAT::SaveState(T** state, size_t size) {
+  memcpy(shm_, (*state), size);
   return 0;
 }
 
-void MyNAT::InitRedisConnection() {
-  char err_msg[1024];
-  strcat(err_msg, "Error message: ");
-  printf("start connecting redis server...\n");
-  context = redisConnect(REDIS_IP, REDIS_PORT);
-  if (!context || context->err) {
-    fprintf(stderr, "Cannot initialize or cannot connect \
-    to the redis server. %s\n", context ? strcat(err_msg, context->errstr) : "");
-    redisFree(context);
-    return;
-  }
-  is_connected_ = true;
+int MyNAT::InitShm() {
+  //init shared memory, make the size twice as much as that of the original state size.
+  shm_id_ = shmget(shm_key_, 
+        state_size_ * 2, 0666 |IPC_CREAT);
+  if (shm_id_ < 0) return shm_id_;
+  shm_ = shmat(shm_id_, 0, 0);
+  if (shm_ < (void*)0) return -1;
+  return 0;
 }
 
 ADD_MODULE(MyNAT, "mynat", "my Dynamic Network address/port translator from original")

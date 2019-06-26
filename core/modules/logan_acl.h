@@ -31,7 +31,8 @@
 #define BESS_MODULES_MYACL_H_
 
 #include <vector>
-#include <hiredis/hiredis.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 
 #include "../module.h"
 #include "../pb/module_msg.pb.h"
@@ -61,14 +62,8 @@ class MyACL final : public Module {
 
   MyACL() : Module() { max_allowed_workers_ = Worker::kMaxWorkers; }
 
-  // clean the mess
-  ~MyACL() { 
-    redisFree(context);
-    if (fake_state_) {
-        free(fake_state_);
-        fake_state_ = NULL;
-    }
-  }
+  ~MyACL() { free(fake_state_); }
+  
 
   CommandResponse Init(const bess::pb::MyACLArg &arg);
 
@@ -79,13 +74,13 @@ class MyACL final : public Module {
 
  private:
   std::vector<ACLRule> rules_;
-  const char* REDIS_IP = "127.0.0.1";
-  const int REDIS_PORT = 6379;
+  
   size_t state_size_ = 0;
   uint8_t* fake_state_ = NULL;
-  redisContext* context = NULL;
-  void InitRedisConnection();
-  bool is_connected_ = false;
+  int shm_id_ = 0;   // the shared memory descriptor
+  key_t shm_key_ = (key_t)1234;
+  void* shm_;
+  int InitShm();
   template<typename T>
   int FetchState(T** state);
   template<typename T>

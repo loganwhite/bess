@@ -41,7 +41,8 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-#include <hiredis/hiredis.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 
 #include "../utils/cuckoo_map.h"
 #include "../utils/endian.h"
@@ -154,13 +155,8 @@ class MyNAT final : public Module {
   // returns the number of active NAT entries (flows)
   std::string GetDesc() const override;
 
-  // clean the redis context object
-  ~MyNAT() { 
-    redisFree(context);
-    if (fake_state_)
-      free(fake_state_);
-      fake_state_ = NULL;
-  }
+  // clean the state object
+  ~MyNAT() {  free(fake_state_); }
 
  private:
   using HashTable = bess::utils::CuckooMap<Endpoint, NatEntry, Endpoint::Hash,
@@ -186,18 +182,17 @@ class MyNAT final : public Module {
   HashTable map_;
   Random rng_;
 
-  // Redis configurations
-  const char* REDIS_IP = "127.0.0.1";
-  const int REDIS_PORT = 6379;
+  // Shared Memory configurations
   size_t state_size_ = 0;
   uint8_t* fake_state_ = NULL;
-  redisContext* context = NULL;
-  void InitRedisConnection();
-  bool is_connected_ = false;
+  int shm_id_ = 0;   // the shared memory descriptor
+  key_t shm_key_ = (key_t)1234;
+  void* shm_;
+  int InitShm();
   template<typename T>
-  int FetchState(T** state, const char* state_name);
+  int FetchState(T** state);
   template<typename T>
-  int SaveState(T** state, size_t size, const char* state_name);
+  int SaveState(T** state, size_t size);
 };
 
 #endif  // BESS_MODULES_MYNAT_H_
