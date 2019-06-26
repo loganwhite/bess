@@ -66,6 +66,9 @@ CommandResponse MyNAT::Init(const bess::pb::MyNATArg &arg) {
   // Check before committing any changes.
   state_size_ = (size_t)arg.state_size();
   fake_state_ = (uint8_t*)malloc(state_size_ * sizeof(uint8_t));
+
+  //init redis connection
+  InitRedisConnection();
   for (const auto &address_range : arg.ext_addrs()) {
     for (const auto &range : address_range.port_ranges()) {
       if (range.begin() >= range.end() || range.begin() > UINT16_MAX ||
@@ -110,7 +113,7 @@ CommandResponse MyNAT::Init(const bess::pb::MyNATArg &arg) {
 
   // Sort so that GetInitialArg is predictable and consistent.
   std::sort(ext_addrs_.begin(), ext_addrs_.end());
-
+  SaveState<uint8_t>(&fake_state_, sizeof(uint8_t) * state_size_, "nat_state");
   return CommandSuccess();
 }
 
@@ -126,7 +129,6 @@ CommandResponse MyNAT::GetInitialArg(const bess::pb::EmptyArg &) {
       erange->set_suspended(irange.suspended);
     }
   }
-  SaveState<uint8_t*>(&fake_state_, sizeof(uint8_t) * state_size_, "nat_state");
   return CommandSuccess(resp);
 }
 
@@ -234,7 +236,7 @@ MyNAT::HashTable::Entry *MyNAT::CreateNewEntry(const Endpoint &src_internal,
         free(fake_state_);
         fake_state_ = NULL;  // in case it becomes a wild pointer.
       }
-      FetchState<uint8_t*>(&fake_state_, "nat_state");
+      FetchState<uint8_t>(&fake_state_, "nat_state");
       src_external.port = be16_t(port);
       auto *hash_reverse = map_.Find(src_external);
       if (hash_reverse == nullptr) {
@@ -275,7 +277,7 @@ MyNAT::HashTable::Entry *MyNAT::CreateNewEntry(const Endpoint &src_internal,
       // FIXME: Should not try for kMaxTrials.
     } while (port != start_port && trials < kMaxTrials);
   }
-  SaveState<uint8_t*>(&fake_state_, sizeof(uint8_t)*state_size_, "nat_state");
+  SaveState<uint8_t>(&fake_state_, sizeof(uint8_t)*state_size_, "nat_state");
   return nullptr;
 }
 
@@ -357,7 +359,7 @@ inline void MyNAT::DoProcessBatch(Context *ctx, bess::PacketBatch *batch) {
       free(fake_state_);
       fake_state_ = NULL;
     }
-    FetchState<uint8_t*>(&fake_state_, "nat_state");
+    FetchState<uint8_t>(&fake_state_, "nat_state");
     auto *hash_item = map_.Find(before);
 
     if (hash_item == nullptr) {
@@ -366,7 +368,7 @@ inline void MyNAT::DoProcessBatch(Context *ctx, bess::PacketBatch *batch) {
         continue;
       }
     }
-    SaveState<uint8_t*>(&fake_state_, sizeof(uint8_t)*state_size_, "nat_state");
+    SaveState<uint8_t>(&fake_state_, sizeof(uint8_t)*state_size_, "nat_state");
     // only refresh for outbound packets, rfc4787 REQ-6
     if (dir == kForward) {
       hash_item->second.last_refresh = now;
@@ -394,7 +396,7 @@ std::string MyNAT::GetDesc() const {
 
 
 template<typename T>
-int MyNAT::FetchState(T* state, const char* state_name) {
+int MyNAT::FetchState(T** state, const char* state_name) {
   redisReply* reply = NULL;
   char str_redis_cmd[1024] = {0};
 
@@ -411,7 +413,8 @@ int MyNAT::FetchState(T* state, const char* state_name) {
     return -1;
   }
   // printf("Redis: %s\n", reply->str);
-  *state = (*(T*)reply->str);
+  (*state) = (T*) malloc(sizeof(T) * state_size_);
+  memcpy((*state), reply->str, sizeof(T) * state_size_);
 
   freeReplyObject(reply);
   return 0;
@@ -419,13 +422,13 @@ int MyNAT::FetchState(T* state, const char* state_name) {
 
 
 template<typename T>
-int MyNAT::SaveState(T* state, size_t size, const char* state_name) {
+int MyNAT::SaveState(T** state, size_t size, const char* state_name) {
   redisReply* reply = NULL;
   char str_redis_cmd[1024] = {0};
   if (!is_connected_) return -1;
   printf("start executing the redis commands...\n");
   sprintf(str_redis_cmd, "SET %s %%b", state_name);
-  reply = (redisReply*)redisCommand(context, str_redis_cmd, state, size);
+  reply = (redisReply*)redisCommand(context, str_redis_cmd, (*state), size);
   if (!reply || reply->type == REDIS_REPLY_ERROR || !strcmp("(null)", reply->str)) {
     fprintf(stderr, "Connot running redis commands or Redis \
     server returns an error. Error message: %s\n", reply ? reply->str : context->errstr);

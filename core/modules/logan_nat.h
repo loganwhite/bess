@@ -155,7 +155,12 @@ class MyNAT final : public Module {
   std::string GetDesc() const override;
 
   // clean the redis context object
-  ~MyNAT() { redisFree(context); free(fake_state_); }
+  ~MyNAT() { 
+    redisFree(context);
+    if (fake_state_)
+      free(fake_state_);
+      fake_state_ = NULL;
+  }
 
  private:
   using HashTable = bess::utils::CuckooMap<Endpoint, NatEntry, Endpoint::Hash,
@@ -190,9 +195,9 @@ class MyNAT final : public Module {
   void InitRedisConnection();
   bool is_connected_ = false;
   template<typename T>
-  int FetchState(T* state, const char* state_name);
+  int FetchState(T** state, const char* state_name);
   template<typename T>
-  int SaveState(T* state, size_t size, const char* state_name);
+  int SaveState(T** state, size_t size, const char* state_name);
 };
 
 #endif  // BESS_MODULES_MYNAT_H_

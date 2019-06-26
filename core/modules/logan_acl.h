@@ -60,7 +60,15 @@ class MyACL final : public Module {
   static const Commands cmds;
 
   MyACL() : Module() { max_allowed_workers_ = Worker::kMaxWorkers; }
-  ~MyACL() { redisFree(context); }
+
+  // clean the mess
+  ~MyACL() { 
+    redisFree(context);
+    if (fake_state_) {
+        free(fake_state_);
+        fake_state_ = NULL;
+    }
+  }
 
   CommandResponse Init(const bess::pb::MyACLArg &arg);
 
@@ -79,9 +87,9 @@ class MyACL final : public Module {
   void InitRedisConnection();
   bool is_connected_ = false;
   template<typename T>
-  int FetchState(T* state);
+  int FetchState(T** state);
   template<typename T>
-  int SaveState(T* state, size_t size);
+  int SaveState(T** state, size_t size);
 };
 
 #endif  // BESS_MODULES_MYACL_H_

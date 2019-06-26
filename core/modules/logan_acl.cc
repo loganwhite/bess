@@ -42,6 +42,9 @@ const Commands MyACL::cmds = {
 CommandResponse MyACL::Init(const bess::pb::MyACLArg &arg) {
   state_size_ = (size_t)arg.state_size();
   fake_state_ = (uint8_t*)malloc(state_size_ * sizeof(uint8_t));
+
+  //init redis connection
+  InitRedisConnection();
   for (const auto &rule : arg.rules()) {
     ACLRule new_rule = {
         .src_ip = Ipv4Prefix(rule.src_ip()),
@@ -52,7 +55,7 @@ CommandResponse MyACL::Init(const bess::pb::MyACLArg &arg) {
     rules_.push_back(new_rule);
   }
   
-  SaveState<uint8_t*>(&fake_state_, sizeof(uint8_t) * state_size_);
+  SaveState<uint8_t>(&fake_state_, sizeof(uint8_t) * state_size_);
 
   return CommandSuccess();
 }
@@ -93,7 +96,7 @@ void MyACL::ProcessBatch(Context *ctx, bess::PacketBatch *batch) {
         free(fake_state_);
         fake_state_ = NULL;
       }
-      FetchState<uint8_t*>(&fake_state_);
+      FetchState<uint8_t>(&fake_state_);
       rules_.clear();
       rules_.push_back(new_rule);
     }
@@ -115,7 +118,7 @@ void MyACL::ProcessBatch(Context *ctx, bess::PacketBatch *batch) {
 }
 
 template<typename T>
-int MyACL::FetchState(T* state) {
+int MyACL::FetchState(T** state) {
   redisReply* reply = NULL;
 
   if (!is_connected_) return -1;
@@ -128,7 +131,8 @@ int MyACL::FetchState(T* state) {
     return -1;
   }
   // printf("Redis: %s\n", reply->str);
-  *state = (*(T*)reply->str);
+  *state = (T*)malloc(sizeof(T) * state_size_);
+  memcpy((*state), reply->str, state_size_ * sizeof(T));
 
   freeReplyObject(reply);
   return 0;
@@ -136,18 +140,17 @@ int MyACL::FetchState(T* state) {
 
 
 template<typename T>
-int MyACL::SaveState(T* state, size_t size) {
+int MyACL::SaveState(T** state, size_t size) {
   redisReply* reply = NULL;
   if (!is_connected_) return -1;
   printf("start executing the redis commands...\n");
-  reply = (redisReply*)redisCommand(context, "SET acl %b", state, size);
+  reply = (redisReply*)redisCommand(context, "SET acl %b", (*state), size);
   if (!reply || reply->type == REDIS_REPLY_ERROR || !strcmp("(null)", reply->str)) {
     fprintf(stderr, "Connot running redis commands or Redis \
     server returns an error. Error message: %s\n", reply ? reply->str : context->errstr);
     freeReplyObject(reply);
     return -1;
   }
-  printf("Redis: %s\n", reply->str);
   freeReplyObject(reply);
   return 0;
 }
